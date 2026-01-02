@@ -80,8 +80,19 @@ func (jr *JobRunner) Run() int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go jr.readOutput(ctx, jr.process.Stdout)
-	go jr.readOutput(ctx, jr.process.Stderr)
+	stdout, err := jr.process.StdoutPipe()
+	if err != nil {
+		jr.logger.Log("Failed to create stdout pipe: %v", err)
+		return 1
+	}
+	stderr, err := jr.process.StderrPipe()
+	if err != nil {
+		jr.logger.Log("Failed to create stderr pipe: %v", err)
+		return 1
+	}
+
+	go jr.readOutput(ctx, stdout)
+	go jr.readOutput(ctx, stderr)
 
 	// Periodic tasks
 	outputTicker := time.NewTicker(time.Duration(jr.config.OutputIntervalMS) * time.Millisecond)
@@ -137,19 +148,6 @@ func (jr *JobRunner) startProcess() error {
 	jr.process.SysProcAttr = &syscall.SysProcAttr{
 		Setsid: true,
 	}
-	
-	// Setup pipes
-	stdout, err := jr.process.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("create stdout pipe: %w", err)
-	}
-	stderr, err := jr.process.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("create stderr pipe: %w", err)
-	}
-	
-	jr.process.Stdout = stdout
-	jr.process.Stderr = stderr
 	
 	// Start process
 	if err := jr.process.Start(); err != nil {
