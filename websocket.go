@@ -22,6 +22,7 @@ type Message struct {
 	Data    string `json:"data,omitempty"`
 	Seq     int    `json:"seq,omitempty"`
 	RetCode int    `json:"retcode,omitempty"`
+	Message string `json:"message,omitempty"` // For NACK and error messages
 	
 	// ACK fields
 	AckType     string `json:"ack_type,omitempty"`

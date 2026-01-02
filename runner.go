@@ -44,39 +44,50 @@ func NewJobRunner(config *Config, logger *Logger) *JobRunner {
 
 // Run executes the job and returns the exit code
 func (jr *JobRunner) Run() int {
-	// Check lockfile if overlap not allowed
-	if !jr.config.AllowOverlap {
-		acquired, err := jr.acquireLockfile()
-		if err != nil {
-			jr.logger.Log("Lockfile error: %v", err)
-			return 254
-		}
-		if !acquired {
-			jr.logger.Log("Job already running, overlap not allowed")
-			return 254
-		}
-		defer jr.releaseLockfile()
-	}
-
-	// Connect to WebSocket
+	// Connect to WebSocket in parallel (non-blocking, best-effort)
+	jr.logger.Debug("Starting WebSocket client")
 	jr.ws = NewWebSocketClient(jr.config, jr.logger, jr)
 	go jr.ws.Run()
 
-	// Wait for initial connection
+	// Give WebSocket a brief moment to connect, but don't wait for success
 	time.Sleep(100 * time.Millisecond)
 
-	// Send connect and start messages
+	// Send connect message (queued if not connected yet)
+	jr.logger.Debug("Sending connect message")
 	jr.sendConnectMessage()
-	jr.sendStartMessage()
 
-	// Start the subprocess
-	startTime := time.Now()
-	if err := jr.startProcess(); err != nil {
-		jr.logger.Log("Failed to start process: %v", err)
-		return 1
+	// Check lockfile if overlap not allowed
+	if !jr.config.AllowOverlap {
+		jr.logger.Debug("Checking lockfile")
+		acquired, err := jr.acquireLockfile()
+		if err != nil {
+			jr.logger.Log("Lockfile error: %v", err)
+			// Run a dummy process that just reports the error
+			return jr.reportErrorAndExit(254, fmt.Sprintf("Lockfile error: %v", err))
+		}
+		if !acquired {
+			jr.logger.Log("Job already running, overlap not allowed")
+			return jr.reportErrorAndExit(254, "Job already running, overlap not allowed")
+		}
+		defer jr.releaseLockfile()
+		jr.logger.Debug("Lockfile acquired, proceeding with job execution")
 	}
 
-	// Start output reading goroutines
+	// Create the subprocess (but don't start yet)
+	jr.logger.Debug("Creating subprocess: %s", jr.config.Command)
+	jr.process = exec.Command("sh", "-c", jr.config.Command)
+	
+	if jr.config.WorkingDir != "" {
+		jr.process.Dir = jr.config.WorkingDir
+	}
+	
+	// Create new session (process group)
+	jr.process.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
+
+	// Setup output reading goroutines
+	jr.logger.Debug("Setting up output pipes")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -91,8 +102,23 @@ func (jr *JobRunner) Run() int {
 		return 1
 	}
 
+	// Now start the subprocess
+	jr.logger.Debug("About to start subprocess")
+	startTime := time.Now()
+	if err := jr.process.Start(); err != nil {
+		jr.logger.Log("Failed to start process: %v", err)
+		return 1
+	}
+	
+	// Save process group ID
+	jr.pgid = jr.process.Process.Pid
+	jr.logger.Log("Process started with PID %d, PGID %d", jr.process.Process.Pid, jr.pgid)
+	
+	jr.sendStartMessage()
+
 	go jr.readOutput(ctx, stdout)
 	go jr.readOutput(ctx, stderr)
+	jr.logger.Debug("Output readers started, entering main loop")
 
 	// Periodic tasks
 	outputTicker := time.NewTicker(time.Duration(jr.config.OutputIntervalMS) * time.Millisecond)
@@ -135,30 +161,6 @@ func (jr *JobRunner) Run() int {
 			}
 		}
 	}
-}
-
-func (jr *JobRunner) startProcess() error {
-	jr.process = exec.Command("sh", "-c", jr.config.Command)
-	
-	if jr.config.WorkingDir != "" {
-		jr.process.Dir = jr.config.WorkingDir
-	}
-	
-	// Create new session (process group)
-	jr.process.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
-	
-	// Start process
-	if err := jr.process.Start(); err != nil {
-		return fmt.Errorf("start process: %w", err)
-	}
-	
-	// Save process group ID
-	jr.pgid = jr.process.Process.Pid
-	
-	jr.logger.Log("Process started with PID %d, PGID %d", jr.process.Process.Pid, jr.pgid)
-	return nil
 }
 
 func (jr *JobRunner) readOutput(ctx context.Context, reader io.Reader) {
@@ -260,4 +262,24 @@ func (jr *JobRunner) terminateProcess() {
 	}
 	
 	jr.logger.Log("WARNING: Process still alive after 10 SIGKILL attempts")
+}
+
+// reportErrorAndExit sends start message with error output and completion message
+func (jr *JobRunner) reportErrorAndExit(exitCode int, errorMsg string) int {
+	// Send start message (PID 0 indicates error before process start)
+	jr.sendStartMessageWithError(0)
+	
+	// Send error as output
+	jr.sendOutputMessage(errorMsg + "\n")
+	
+	// Wait a moment for messages to be sent
+	time.Sleep(500 * time.Millisecond)
+	
+	// Send completion
+	jr.sendCompleteMessage(exitCode)
+	
+	// Wait for completion to be sent
+	time.Sleep(2 * time.Second)
+	
+	return exitCode
 }

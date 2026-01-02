@@ -4,6 +4,11 @@ import (
 	"time"
 )
 
+// formatTimestamp returns ISO8601 timestamp compatible with Python's fromisoformat
+func formatTimestamp() string {
+	return time.Now().UTC().Format("2006-01-02T15:04:05.000000+00:00")
+}
+
 // Message sending methods for JobRunner
 
 func (jr *JobRunner) sendConnectMessage() {
@@ -12,7 +17,7 @@ func (jr *JobRunner) sendConnectMessage() {
 		JobName:   jr.config.JobName,
 		Instance:  jr.config.JobInstance,
 		Machine:   jr.config.MachineID,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Timestamp: formatTimestamp(),
 	}
 	
 	jr.msgMutex.Lock()
@@ -32,7 +37,27 @@ func (jr *JobRunner) sendStartMessage() {
 		Machine:   jr.config.MachineID,
 		PID:       jr.process.Process.Pid,
 		Version:   Version,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Timestamp: formatTimestamp(),
+	}
+	
+	jr.msgMutex.Lock()
+	jr.pendingMsgs = append(jr.pendingMsgs, msg)
+	jr.msgMutex.Unlock()
+	
+	if jr.ws.IsConnected() {
+		jr.ws.Send(msg)
+	}
+}
+
+func (jr *JobRunner) sendStartMessageWithError(pid int) {
+	msg := Message{
+		Type:      "start",
+		JobName:   jr.config.JobName,
+		Instance:  jr.config.JobInstance,
+		Machine:   jr.config.MachineID,
+		PID:       pid,
+		Version:   Version,
+		Timestamp: formatTimestamp(),
 	}
 	
 	jr.msgMutex.Lock()
@@ -60,7 +85,7 @@ func (jr *JobRunner) sendOutputMessage(data string) {
 		Stream:    "stdout",
 		Data:      data,
 		Seq:       jr.nextSeq,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Timestamp: formatTimestamp(),
 	}
 	
 	jr.pendingMsgs = append(jr.pendingMsgs, msg)
@@ -82,7 +107,7 @@ func (jr *JobRunner) sendHeartbeat() {
 		JobName:   jr.config.JobName,
 		Instance:  jr.config.JobInstance,
 		Machine:   jr.config.MachineID,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Timestamp: formatTimestamp(),
 	}
 	
 	jr.ws.Send(msg)
@@ -106,7 +131,7 @@ func (jr *JobRunner) sendCompleteMessage(exitCode int) {
 		Machine:   jr.config.MachineID,
 		RetCode:   finalCode,
 		Seq:       jr.nextSeq,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Timestamp: formatTimestamp(),
 	}
 	
 	jr.msgMutex.Lock()
