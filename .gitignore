@@ -26,6 +26,7 @@ go.work.sum
 /bin/
 /dist/
 /build/
+sp_wrapper
 
 # IDEs and editors
 # VSCode
