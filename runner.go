@@ -142,6 +142,18 @@ func (jr *JobRunner) Run() int {
 			cancel() // Stop reading goroutines
 			time.Sleep(100 * time.Millisecond) // Give readers time to finish
 			jr.flushOutput()
+			
+			// If killed, add termination message to output
+			if jr.killed {
+				var killMsg string
+				if jr.killedByTimeout {
+					killMsg = fmt.Sprintf("\n[Job exceeded timeout of %d seconds]\n", jr.config.Timeout)
+				} else {
+					killMsg = "\n[Job terminated by user request]\n"
+				}
+				jr.sendOutputMessage(killMsg)
+			}
+			
 			jr.sendCompleteMessage(exitCode)
 			return exitCode
 			
