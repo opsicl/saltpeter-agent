@@ -49,8 +49,8 @@ go.work.sum
 *.swo
 
 # Emacs
-\#*\#
-.\#*
+#*#
+.#*
 
 # Backup files
 *~
