@@ -38,9 +38,6 @@ go.work.sum
 .history/
 *.code-workspace
 
-# Local History for Visual Studio Code
-.history/
-
 # JetBrains IDEs (IntelliJ, GoLand, etc.)
 .idea/
 *.iml
@@ -50,20 +47,18 @@ go.work.sum
 # Vim
 *.swp
 *.swo
-*~
 
 # Emacs
-*~
 \#*\#
 .\#*
+
+# Backup files
+*~
 
 # macOS
 .DS_Store
 .AppleDouble
 .LSOverride
-
-# Linux
-*~
 
 # Windows
 Thumbs.db
