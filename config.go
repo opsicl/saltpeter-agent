@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -55,13 +56,31 @@ func parseConfig() (*Config, error) {
 		return nil, fmt.Errorf("SP_COMMAND not set")
 	}
 
-	// Default machine ID to hostname
+	// Default machine ID to FQDN (like Python wrapper uses socket.getfqdn())
 	if config.MachineID == "" {
 		hostname, err := os.Hostname()
 		if err != nil {
 			return nil, fmt.Errorf("get hostname: %w", err)
 		}
-		config.MachineID = hostname
+		
+		// Try to get FQDN by looking up the hostname
+		addrs, err := net.LookupHost(hostname)
+		if err == nil && len(addrs) > 0 {
+			// Reverse lookup first IP to get FQDN
+			names, err := net.LookupAddr(addrs[0])
+			if err == nil && len(names) > 0 {
+				// Use first FQDN, strip trailing dot if present
+				fqdn := names[0]
+				if len(fqdn) > 0 && fqdn[len(fqdn)-1] == '.' {
+					fqdn = fqdn[:len(fqdn)-1]
+				}
+				config.MachineID = fqdn
+			} else {
+				config.MachineID = hostname
+			}
+		} else {
+			config.MachineID = hostname
+		}
 	}
 
 	// Parse timeout

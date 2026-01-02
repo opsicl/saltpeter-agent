@@ -20,8 +20,8 @@ type Message struct {
 	Version string `json:"version,omitempty"`
 	Stream  string `json:"stream,omitempty"`
 	Data    string `json:"data,omitempty"`
-	Seq     int    `json:"seq,omitempty"`
-	RetCode int    `json:"retcode,omitempty"`
+	Seq     *int   `json:"seq,omitempty"` // Pointer to distinguish missing vs 0
+	RetCode *int   `json:"retcode,omitempty"` // Pointer so 0 is sent (not omitted)
 	Message string `json:"message,omitempty"` // For NACK and error messages
 	
 	// ACK fields
@@ -113,7 +113,22 @@ func (wsc *WebSocketClient) handleAck(msg Message) {
 	wsc.runner.msgMutex.Lock()
 	defer wsc.runner.msgMutex.Unlock()
 	
-	if msg.AckType != "" {
+	// Check sequence-based ACK first (output messages)
+	if msg.Seq != nil {
+		if *msg.Seq > wsc.runner.lastAckedSeq {
+			wsc.logger.Debug("ACK received: seq=%d", *msg.Seq)
+			wsc.runner.lastAckedSeq = *msg.Seq
+			wsc.runner.waitingForAck = false
+			// Remove ACKed messages
+			newPending := []Message{}
+			for _, pending := range wsc.runner.pendingMsgs {
+				if pending.Seq != nil && *pending.Seq > *msg.Seq {
+					newPending = append(newPending, pending)
+				}
+			}
+			wsc.runner.pendingMsgs = newPending
+		}
+	} else if msg.AckType != "" {
 		// Type-based ACK (connect, start, complete)
 		wsc.logger.Debug("ACK received for %s", msg.AckType)
 		// Remove from pending
@@ -124,21 +139,6 @@ func (wsc *WebSocketClient) handleAck(msg Message) {
 			}
 		}
 		wsc.runner.pendingMsgs = newPending
-	} else if msg.Seq >= 0 {
-		// Sequence-based ACK (output)
-		if msg.Seq > wsc.runner.lastAckedSeq {
-			wsc.logger.Debug("ACK received: seq=%d", msg.Seq)
-			wsc.runner.lastAckedSeq = msg.Seq
-			wsc.runner.waitingForAck = false
-			// Remove ACKed messages
-			newPending := []Message{}
-			for _, pending := range wsc.runner.pendingMsgs {
-				if pending.Seq > msg.Seq {
-					newPending = append(newPending, pending)
-				}
-			}
-			wsc.runner.pendingMsgs = newPending
-		}
 	}
 }
 
@@ -166,7 +166,7 @@ func (wsc *WebSocketClient) handleSyncResponse(msg Message) {
 		// Remove ACKed messages
 		newPending := []Message{}
 		for _, pending := range wsc.runner.pendingMsgs {
-			if pending.Seq > msg.LastSeq {
+			if pending.Seq != nil && *pending.Seq > msg.LastSeq {
 				newPending = append(newPending, pending)
 			}
 		}

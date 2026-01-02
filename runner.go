@@ -120,6 +120,13 @@ func (jr *JobRunner) Run() int {
 	go jr.readOutput(ctx, stderr)
 	jr.logger.Debug("Output readers started, entering main loop")
 
+	// Wait for process in goroutine
+	processDone := make(chan int)
+	go func() {
+		jr.process.Wait()
+		processDone <- jr.process.ProcessState.ExitCode()
+	}()
+
 	// Periodic tasks
 	outputTicker := time.NewTicker(time.Duration(jr.config.OutputIntervalMS) * time.Millisecond)
 	defer outputTicker.Stop()
@@ -130,22 +137,22 @@ func (jr *JobRunner) Run() int {
 	// Main loop
 	for {
 		select {
+		case exitCode := <-processDone:
+			// Process finished
+			cancel() // Stop reading goroutines
+			time.Sleep(100 * time.Millisecond) // Give readers time to finish
+			jr.flushOutput()
+			jr.sendCompleteMessage(exitCode)
+			return exitCode
+			
 		case <-outputTicker.C:
 			jr.flushOutput()
 			
 		case <-heartbeatTicker.C:
+			jr.logger.Debug("Sending heartbeat")
 			jr.sendHeartbeat()
 			
 		case <-time.After(100 * time.Millisecond):
-			// Check if process finished
-			if jr.process.ProcessState != nil {
-				cancel() // Stop reading goroutines
-				jr.flushOutput()
-				exitCode := jr.process.ProcessState.ExitCode()
-				jr.sendCompleteMessage(exitCode)
-				return exitCode
-			}
-			
 			// Check timeout
 			if jr.config.Timeout > 0 && !jr.killed {
 				elapsed := time.Since(startTime).Seconds()
@@ -187,6 +194,16 @@ func (jr *JobRunner) flushOutput() {
 		jr.outputMutex.Unlock()
 		return
 	}
+	
+	// Check if we're waiting for ACK - if so, don't flush yet
+	jr.msgMutex.Lock()
+	if jr.waitingForAck {
+		jr.msgMutex.Unlock()
+		jr.outputMutex.Unlock()
+		jr.logger.Debug("Skipping flush, waiting for ACK (buffer has %d lines)", len(jr.outputBuffer))
+		return
+	}
+	jr.msgMutex.Unlock()
 	
 	// Combine all buffered output
 	var combined string

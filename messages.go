@@ -20,6 +20,8 @@ func (jr *JobRunner) sendConnectMessage() {
 		Timestamp: formatTimestamp(),
 	}
 	
+	jr.logger.Debug("Sending connect message: job=%s, instance=%s, machine=%s", jr.config.JobName, jr.config.JobInstance, jr.config.MachineID)
+	
 	jr.msgMutex.Lock()
 	jr.pendingMsgs = append(jr.pendingMsgs, msg)
 	jr.msgMutex.Unlock()
@@ -39,6 +41,8 @@ func (jr *JobRunner) sendStartMessage() {
 		Version:   Version,
 		Timestamp: formatTimestamp(),
 	}
+	
+	jr.logger.Debug("Sending start message: PID=%d", jr.process.Process.Pid)
 	
 	jr.msgMutex.Lock()
 	jr.pendingMsgs = append(jr.pendingMsgs, msg)
@@ -73,10 +77,7 @@ func (jr *JobRunner) sendOutputMessage(data string) {
 	jr.msgMutex.Lock()
 	defer jr.msgMutex.Unlock()
 	
-	if jr.waitingForAck {
-		return // Wait for ACK before sending more
-	}
-	
+	seq := jr.nextSeq // Capture current value
 	msg := Message{
 		Type:      "output",
 		JobName:   jr.config.JobName,
@@ -84,9 +85,11 @@ func (jr *JobRunner) sendOutputMessage(data string) {
 		Machine:   jr.config.MachineID,
 		Stream:    "stdout",
 		Data:      data,
-		Seq:       jr.nextSeq,
+		Seq:       &seq, // Use captured value
 		Timestamp: formatTimestamp(),
 	}
+	
+	jr.logger.Debug("Sending output message: seq=%d, len=%d", seq, len(data))
 	
 	jr.pendingMsgs = append(jr.pendingMsgs, msg)
 	jr.nextSeq++
@@ -124,13 +127,14 @@ func (jr *JobRunner) sendCompleteMessage(exitCode int) {
 		}
 	}
 	
+	seq := jr.nextSeq // Capture current value
 	msg := Message{
 		Type:      "complete",
 		JobName:   jr.config.JobName,
 		Instance:  jr.config.JobInstance,
 		Machine:   jr.config.MachineID,
-		RetCode:   finalCode,
-		Seq:       jr.nextSeq,
+		RetCode:   &finalCode,
+		Seq:       &seq, // Use captured value
 		Timestamp: formatTimestamp(),
 	}
 	
