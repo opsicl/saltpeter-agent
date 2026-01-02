@@ -11,13 +11,22 @@ const Version = "1.0.0-beta.1"
 func main() {
 	// Check if we're already daemonized
 	if os.Getenv("_SP_DAEMON") != "1" {
+		// Print version first
+		fmt.Println("Saltpeter Wrapper version", Version)
+		
+		// Validate configuration BEFORE daemonizing
+		// This ensures errors are shown to user instead of hidden in daemon
+		if _, err := parseConfig(); err != nil {
+			fmt.Fprintf(os.Stderr, "Configuration error: %v\n", err)
+			os.Exit(1)
+		}
+		
 		// Not daemonized yet - re-exec as daemon
 		if err := daemonize(); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to daemonize: %v\n", err)
 			os.Exit(1)
 		}
 		// Parent process - return success to Salt immediately
-		fmt.Println("Saltpeter Wrapper version", Version)
 		fmt.Println("Wrapper started successfully")
 		os.Exit(0)
 	}
