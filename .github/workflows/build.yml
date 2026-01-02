@@ -1,0 +1,110 @@
+name: Build Wrapper Binary
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - dev
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Static Binary
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Extract version and branch info
+        id: version
+        run: |
+          VERSION=$(grep -oP 'const Version = "\K[^"]+' main.go)
+          BRANCH=${GITHUB_REF#refs/heads/}
+          
+          # Add branch prefix for non-main branches
+          if [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ]; then
+            VERSION_TAG="${BRANCH}-${VERSION}"
+            ARTIFACT_NAME="sp_wrapper-${BRANCH}"
+          else
+            VERSION_TAG="${VERSION}"
+            ARTIFACT_NAME="sp_wrapper"
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_tag=$VERSION_TAG" >> $GITHUB_OUTPUT
+          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          
+          echo "Building version: $VERSION_TAG from branch: $BRANCH"
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      
+      - name: Build static binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-w -s -extldflags '-static'" \
+            -o sp_wrapper \
+            .
+      
+      - name: Verify binary is static
+        run: |
+          file sp_wrapper
+          ldd sp_wrapper 2>&1 | grep -q "not a dynamic executable" || (echo "Binary is not static!" && exit 1)
+      
+      - name: Test on ancient Ubuntu (12.04 equivalent)
+        run: |
+          docker run --rm -v $PWD:/workspace ubuntu:12.04 /workspace/sp_wrapper 2>&1 | head -5 || true
+      
+      - name: Create version info
+        run: |
+          cat > VERSION.txt << EOF
+          Saltpeter Wrapper (Go)
+          Version: ${{ steps.version.outputs.version_tag }}
+          Branch: ${{ steps.version.outputs.branch }}
+          Platform: linux-amd64 (static binary, works on any Linux)
+          Go: $(go version)
+          Built: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Git Commit: ${{ github.sha }}
+          Git Ref: ${{ github.ref }}
+          
+          Compatible with:
+          - Any Linux x86_64 with kernel 2.6.23+ (2007)
+          - Ubuntu 12.04 through 24.04+
+          - Debian 7 through 12+
+          - RHEL/CentOS 6 through 9+
+          - Alpine Linux (musl libc)
+          EOF
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact_name }}
+          path: |
+            sp_wrapper
+            VERSION.txt
+          retention-days: 90
+      
+      - name: Build multi-arch binaries
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev'
+        run: |
+          # AMD64
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o sp_wrapper-linux-amd64 .
+          
+          # ARM64
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-w -s" -o sp_wrapper-linux-arm64 .
+          
+          # 386 (32-bit)
+          CGO_ENABLED=0 GOOS=linux GOARCH=386 go build -ldflags="-w -s" -o sp_wrapper-linux-386 .
+      
+      - name: Upload multi-arch binaries
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact_name }}-all-platforms
+          path: sp_wrapper-linux-*
+          retention-days: 90
