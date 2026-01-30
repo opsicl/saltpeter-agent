@@ -142,9 +142,12 @@ func (jr *JobRunner) sendCompleteMessage(exitCode int) {
 	jr.pendingMsgs = append(jr.pendingMsgs, msg)
 	jr.msgMutex.Unlock()
 	
+	jr.logger.Debug("Starting completion retry loop (seq=%d, retcode=%d)", seq, finalCode)
+	
 	// Retry sending completion until success
 	for attempt := 0; attempt < 30; attempt++ {
 		if jr.ws.IsConnected() {
+			jr.logger.Debug("Attempt %d: Sending completion message", attempt+1)
 			jr.ws.Send(msg)
 			time.Sleep(2 * time.Second)
 			
@@ -163,6 +166,9 @@ func (jr *JobRunner) sendCompleteMessage(exitCode int) {
 				jr.logger.Log("Completion message acknowledged")
 				return
 			}
+			jr.logger.Debug("Attempt %d: Completion still pending, retrying...", attempt+1)
+		} else {
+			jr.logger.Debug("Attempt %d: WebSocket not connected, waiting...", attempt+1)
 		}
 		time.Sleep(2 * time.Second)
 	}
