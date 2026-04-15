@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -34,10 +35,11 @@ type Message struct {
 
 // WebSocketClient manages WebSocket connection and messaging
 type WebSocketClient struct {
-	config *Config
-	logger *Logger
-	runner *JobRunner
-	conn   *websocket.Conn
+	config    *Config
+	logger    *Logger
+	runner    *JobRunner
+	conn      *websocket.Conn
+	connMutex sync.Mutex
 }
 
 // NewWebSocketClient creates a new WebSocket client
@@ -57,39 +59,69 @@ func (wsc *WebSocketClient) Run() {
 		// Try to connect
 		conn, _, err := websocket.DefaultDialer.Dial(wsc.config.WebSocketURL, nil)
 		if err != nil {
-			wsc.logger.Debug("Connection failed: %v", err)
+			wsc.logger.Log("WebSocket connection failed: %v", err)
 			time.Sleep(retryInterval)
 			continue
 		}
 		
+		wsc.connMutex.Lock()
 		wsc.conn = conn
-		wsc.logger.Debug("WebSocket connected")
+		wsc.connMutex.Unlock()
+		wsc.logger.Log("WebSocket connected")
 		
-		// Handle messages
+		// Resend any pending messages after reconnection
+		wsc.resendPending()
+		
+		// Handle messages until connection dies
 		wsc.handleConnection()
 		
-		// Connection closed, retry
+		// Connection closed
+		wsc.connMutex.Lock()
 		wsc.conn = nil
+		wsc.connMutex.Unlock()
+		wsc.logger.Log("WebSocket disconnected, will retry in %v", retryInterval)
 		time.Sleep(retryInterval)
 	}
 }
 
 func (wsc *WebSocketClient) handleConnection() {
-	// Start message reader
+	done := make(chan struct{})
+
+	// Start message reader — exits when connection breaks
 	go func() {
+		defer close(done)
 		for {
 			var msg Message
 			err := wsc.conn.ReadJSON(&msg)
 			if err != nil {
+				wsc.logger.Log("WebSocket read error: %v", err)
 				return
 			}
 			wsc.handleIncomingMessage(msg)
 		}
 	}()
-	
-	// Keep connection alive
-	for wsc.conn != nil {
-		time.Sleep(100 * time.Millisecond)
+
+	// Block until reader exits (connection lost)
+	<-done
+}
+
+// resendPending retransmits all pending messages after a reconnection
+func (wsc *WebSocketClient) resendPending() {
+	wsc.runner.msgMutex.Lock()
+	pending := make([]Message, len(wsc.runner.pendingMsgs))
+	copy(pending, wsc.runner.pendingMsgs)
+	wsc.runner.msgMutex.Unlock()
+
+	if len(pending) == 0 {
+		return
+	}
+
+	wsc.logger.Log("Resending %d pending messages after reconnection", len(pending))
+	for _, msg := range pending {
+		if err := wsc.Send(msg); err != nil {
+			wsc.logger.Log("Failed to resend %s message: %v", msg.Type, err)
+			return
+		}
 	}
 }
 
@@ -100,7 +132,7 @@ func (wsc *WebSocketClient) handleIncomingMessage(msg Message) {
 	case "ack":
 		wsc.handleAck(msg)
 	case "nack":
-		wsc.logger.Debug("NACK received: expected_seq=%d", msg.ExpectedSeq)
+		wsc.logger.Log("NACK received: expected_seq=%d", msg.ExpectedSeq)
 	case "sync_response":
 		wsc.handleSyncResponse(msg)
 	case "kill":
@@ -175,6 +207,9 @@ func (wsc *WebSocketClient) handleSyncResponse(msg Message) {
 }
 
 func (wsc *WebSocketClient) Send(msg Message) error {
+	wsc.connMutex.Lock()
+	defer wsc.connMutex.Unlock()
+
 	if wsc.conn == nil {
 		return fmt.Errorf("not connected")
 	}
@@ -182,5 +217,7 @@ func (wsc *WebSocketClient) Send(msg Message) error {
 }
 
 func (wsc *WebSocketClient) IsConnected() bool {
+	wsc.connMutex.Lock()
+	defer wsc.connMutex.Unlock()
 	return wsc.conn != nil
 }

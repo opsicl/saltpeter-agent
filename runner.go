@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -19,6 +20,7 @@ type JobRunner struct {
 	process *exec.Cmd
 	pgid    int
 	
+	lockFile       *os.File
 	killed         bool
 	killedByTimeout bool
 	killMutex      sync.Mutex

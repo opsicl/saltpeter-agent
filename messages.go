@@ -27,7 +27,9 @@ func (jr *JobRunner) sendConnectMessage() {
 	jr.msgMutex.Unlock()
 	
 	if jr.ws.IsConnected() {
-		jr.ws.Send(msg)
+		if err := jr.ws.Send(msg); err != nil {
+			jr.logger.Log("Failed to send connect message: %v", err)
+		}
 	}
 }
 
@@ -49,7 +51,9 @@ func (jr *JobRunner) sendStartMessage() {
 	jr.msgMutex.Unlock()
 	
 	if jr.ws.IsConnected() {
-		jr.ws.Send(msg)
+		if err := jr.ws.Send(msg); err != nil {
+			jr.logger.Log("Failed to send start message: %v", err)
+		}
 	}
 }
 
@@ -69,7 +73,9 @@ func (jr *JobRunner) sendStartMessageWithError(pid int) {
 	jr.msgMutex.Unlock()
 	
 	if jr.ws.IsConnected() {
-		jr.ws.Send(msg)
+		if err := jr.ws.Send(msg); err != nil {
+			jr.logger.Log("Failed to send start-with-error message: %v", err)
+		}
 	}
 }
 
@@ -95,8 +101,11 @@ func (jr *JobRunner) sendOutputMessage(data string) {
 	jr.nextSeq++
 	
 	if jr.ws.IsConnected() {
-		jr.ws.Send(msg)
-		jr.waitingForAck = true
+		if err := jr.ws.Send(msg); err != nil {
+			jr.logger.Log("Failed to send output message seq=%d: %v", seq, err)
+		} else {
+			jr.waitingForAck = true
+		}
 	}
 }
 
@@ -113,7 +122,9 @@ func (jr *JobRunner) sendHeartbeat() {
 		Timestamp: formatTimestamp(),
 	}
 	
-	jr.ws.Send(msg)
+	if err := jr.ws.Send(msg); err != nil {
+		jr.logger.Log("Failed to send heartbeat: %v", err)
+	}
 }
 
 func (jr *JobRunner) sendCompleteMessage(exitCode int) {
@@ -142,13 +153,16 @@ func (jr *JobRunner) sendCompleteMessage(exitCode int) {
 	jr.pendingMsgs = append(jr.pendingMsgs, msg)
 	jr.msgMutex.Unlock()
 	
-	jr.logger.Debug("Starting completion retry loop (seq=%d, retcode=%d)", seq, finalCode)
+	jr.logger.Log("Starting completion send (seq=%d, retcode=%d)", seq, finalCode)
 	
-	// Retry sending completion until success
+	// Retry sending completion until ACKed
 	for attempt := 0; attempt < 30; attempt++ {
 		if jr.ws.IsConnected() {
-			jr.logger.Debug("Attempt %d: Sending completion message", attempt+1)
-			jr.ws.Send(msg)
+			if err := jr.ws.Send(msg); err != nil {
+				jr.logger.Log("Attempt %d: Failed to send completion: %v", attempt+1, err)
+			} else {
+				jr.logger.Debug("Attempt %d: Completion message sent, waiting for ACK", attempt+1)
+			}
 			time.Sleep(2 * time.Second)
 			
 			// Check if ACKed
@@ -166,11 +180,11 @@ func (jr *JobRunner) sendCompleteMessage(exitCode int) {
 				jr.logger.Log("Completion message acknowledged")
 				return
 			}
-			jr.logger.Debug("Attempt %d: Completion still pending, retrying...", attempt+1)
+			jr.logger.Log("Attempt %d: Completion not yet acknowledged, retrying...", attempt+1)
 		} else {
-			jr.logger.Debug("Attempt %d: WebSocket not connected, waiting...", attempt+1)
+			jr.logger.Log("Attempt %d: WebSocket not connected, waiting for reconnection...", attempt+1)
+			time.Sleep(2 * time.Second)
 		}
-		time.Sleep(2 * time.Second)
 	}
 	
 	jr.logger.Log("Failed to send completion after 30 attempts")
