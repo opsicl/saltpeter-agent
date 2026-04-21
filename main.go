@@ -6,7 +6,7 @@ import (
 )
 
 // Version is the wrapper version - update this for new releases
-const Version = "1.0.0-beta.2"
+const Version = "1.0.0-beta.3"
 
 func main() {
 	// Check if we're already daemonized

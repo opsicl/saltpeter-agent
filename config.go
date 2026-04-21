@@ -38,7 +38,7 @@ func parseConfig() (*Config, error) {
 		OutputIntervalMS: 1000, // default 1 second
 		LogLevel:         "normal",
 		LogDir:           "/var/log/sp_wrapper",
-		AllowOverlap:     true,
+		AllowOverlap:     false,
 		LockfilePath:     os.Getenv("SP_LOCKFILE"),
 	}
 

@@ -35,11 +35,12 @@ type Message struct {
 
 // WebSocketClient manages WebSocket connection and messaging
 type WebSocketClient struct {
-	config    *Config
-	logger    *Logger
-	runner    *JobRunner
-	conn      *websocket.Conn
-	connMutex sync.Mutex
+	config          *Config
+	logger          *Logger
+	runner          *JobRunner
+	conn            *websocket.Conn
+	connMutex       sync.Mutex
+	connectionCount int
 }
 
 // NewWebSocketClient creates a new WebSocket client
@@ -66,13 +67,11 @@ func (wsc *WebSocketClient) Run() {
 		
 		wsc.connMutex.Lock()
 		wsc.conn = conn
+		wsc.connectionCount++
 		wsc.connMutex.Unlock()
 		wsc.logger.Log("WebSocket connected")
 		
-		// Resend any pending messages after reconnection
-		wsc.resendPending()
-		
-		// Handle messages until connection dies
+		// Handle messages (starts reader, then resends pending) until connection dies
 		wsc.handleConnection()
 		
 		// Connection closed
@@ -101,22 +100,32 @@ func (wsc *WebSocketClient) handleConnection() {
 		}
 	}()
 
+	// Resend pending messages now that the reader is active to process ACKs
+	wsc.resendPending()
+
 	// Block until reader exits (connection lost)
 	<-done
 }
 
-// resendPending retransmits all pending messages after a reconnection
+// resendPending retransmits all pending messages after a (re)connection
 func (wsc *WebSocketClient) resendPending() {
 	wsc.runner.msgMutex.Lock()
 	pending := make([]Message, len(wsc.runner.pendingMsgs))
 	copy(pending, wsc.runner.pendingMsgs)
+	wsc.connMutex.Lock()
+	count := wsc.connectionCount
+	wsc.connMutex.Unlock()
 	wsc.runner.msgMutex.Unlock()
 
 	if len(pending) == 0 {
 		return
 	}
 
-	wsc.logger.Log("Resending %d pending messages after reconnection", len(pending))
+	label := "reconnection"
+	if count == 1 {
+		label = "initial connection"
+	}
+	wsc.logger.Log("Resending %d pending messages after %s", len(pending), label)
 	for _, msg := range pending {
 		if err := wsc.Send(msg); err != nil {
 			wsc.logger.Log("Failed to resend %s message: %v", msg.Type, err)
@@ -181,24 +190,17 @@ func (wsc *WebSocketClient) handleSyncResponse(msg Message) {
 	wsc.logger.Debug("Sync response: server_last=%d, our_last_acked=%d", msg.LastSeq, wsc.runner.lastAckedSeq)
 	
 	if msg.LastSeq == -1 {
-		// Job doesn't exist on server
+		// Job doesn't exist on server — clear all pending state
 		wsc.logger.Log("Job no longer exists on server, stopping retries")
 		wsc.runner.waitingForAck = false
-		// Clear pending output
-		newPending := []Message{}
-		for _, pending := range wsc.runner.pendingMsgs {
-			if pending.Type != "output" {
-				newPending = append(newPending, pending)
-			}
-		}
-		wsc.runner.pendingMsgs = newPending
+		wsc.runner.pendingMsgs = nil
 	} else if msg.LastSeq >= wsc.runner.lastAckedSeq {
 		wsc.runner.lastAckedSeq = msg.LastSeq
 		wsc.runner.waitingForAck = false
-		// Remove ACKed messages
+		// Remove ACKed sequence messages; keep nil-seq messages (connect, start, complete)
 		newPending := []Message{}
 		for _, pending := range wsc.runner.pendingMsgs {
-			if pending.Seq != nil && *pending.Seq > msg.LastSeq {
+			if pending.Seq == nil || *pending.Seq > msg.LastSeq {
 				newPending = append(newPending, pending)
 			}
 		}
